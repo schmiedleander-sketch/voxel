@@ -1,0 +1,417 @@
+
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+*/
+
+
+import React, { useEffect, useRef, useState } from 'react';
+import { VoxelEngine } from './services/VoxelEngine';
+import { UIOverlay } from './components/UIOverlay';
+import { JsonModal } from './components/JsonModal';
+import { PromptModal } from './components/PromptModal';
+import { WelcomeScreen } from './components/WelcomeScreen';
+import { SaveModal } from './components/SaveModal';
+import { Generators } from './utils/voxelGenerators';
+import { AppState, VoxelData, SavedModel } from './types';
+import { COLORS } from './utils/voxelConstants';
+import { GoogleGenAI, Type } from "@google/genai";
+
+const STORAGE_KEYS = {
+    BUILDS: 'voxel_toy_box_builds',
+    REBUILDS: 'voxel_toy_box_rebuilds'
+};
+
+const App: React.FC = () => {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const engineRef = useRef<VoxelEngine | null>(null);
+  
+  const [appState, setAppState] = useState<AppState>(AppState.STABLE);
+  const [voxelCount, setVoxelCount] = useState<number>(0);
+  
+  const [isJsonModalOpen, setIsJsonModalOpen] = useState(false);
+  const [jsonModalMode, setJsonModalMode] = useState<'view' | 'import'>('view');
+  
+  const [isPromptModalOpen, setIsPromptModalOpen] = useState(false);
+  const [promptMode, setPromptMode] = useState<'create' | 'morph'>('create');
+  
+  const [isSaveModalOpen, setIsSaveModalOpen] = useState(false);
+  
+  const [showWelcome, setShowWelcome] = useState(true);
+  const [isGenerating, setIsGenerating] = useState(false);
+  
+  const [jsonData, setJsonData] = useState('');
+  const [isAutoRotate, setIsAutoRotate] = useState(true);
+  const [isGridVisible, setIsGridVisible] = useState(false);
+
+  // --- Build Mode ---
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [buildTool, setBuildTool] = useState<'add' | 'delete'>('add');
+  const [selectedColor, setSelectedColor] = useState<number>(COLORS.LIGHT);
+
+  // --- State for Custom Models ---
+  const [currentBaseModel, setCurrentBaseModel] = useState<string>('Eagle');
+  const [customBuilds, setCustomBuilds] = useState<SavedModel[]>([]);
+  const [customRebuilds, setCustomRebuilds] = useState<SavedModel[]>([]);
+
+  // Load from localStorage on mount
+  useEffect(() => {
+    const savedBuilds = localStorage.getItem(STORAGE_KEYS.BUILDS);
+    const savedRebuilds = localStorage.getItem(STORAGE_KEYS.REBUILDS);
+    
+    if (savedBuilds) {
+        try {
+            setCustomBuilds(JSON.parse(savedBuilds));
+        } catch(e) { console.error("Error loading builds", e); }
+    }
+    if (savedRebuilds) {
+        try {
+            setCustomRebuilds(JSON.parse(savedRebuilds));
+        } catch(e) { console.error("Error loading rebuilds", e); }
+    }
+
+    if (!containerRef.current) return;
+
+    const engine = new VoxelEngine(
+      containerRef.current,
+      (newState) => setAppState(newState),
+      (count) => setVoxelCount(count)
+    );
+
+    engineRef.current = engine;
+    engine.loadInitialModel(Generators.Eagle());
+
+    const handleResize = () => engine.handleResize();
+    window.addEventListener('resize', handleResize);
+
+    const timer = setTimeout(() => setShowWelcome(false), 5000);
+
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      clearTimeout(timer);
+      engine.cleanup();
+    };
+  }, []);
+
+  // Persist to localStorage whenever custom lists change
+  useEffect(() => {
+      localStorage.setItem(STORAGE_KEYS.BUILDS, JSON.stringify(customBuilds));
+  }, [customBuilds]);
+
+  useEffect(() => {
+      localStorage.setItem(STORAGE_KEYS.REBUILDS, JSON.stringify(customRebuilds));
+  }, [customRebuilds]);
+
+  // Update engine edit mode when state changes
+  useEffect(() => {
+    engineRef.current?.setEditMode(isEditMode);
+  }, [isEditMode]);
+
+  // Update engine grid visibility
+  useEffect(() => {
+    engineRef.current?.setGridVisible(isGridVisible);
+  }, [isGridVisible]);
+
+  const handlePointerMove = (e: React.PointerEvent) => {
+    if (isEditMode && engineRef.current) {
+      engineRef.current.updateGhost(e.clientX, e.clientY, buildTool);
+    }
+  };
+
+  const handleClick = (e: React.MouseEvent) => {
+    if (isEditMode && engineRef.current) {
+      const pos = engineRef.current.getGhostPosition();
+      if (pos) {
+        if (buildTool === 'add') {
+          engineRef.current.addVoxel(pos, selectedColor);
+        } else {
+          engineRef.current.removeVoxel(pos);
+        }
+      }
+    }
+  };
+
+  const handleDismantle = () => {
+    engineRef.current?.dismantle();
+  };
+
+  const handleNewScene = (type: 'Eagle') => {
+    const generator = Generators[type];
+    if (generator && engineRef.current) {
+      engineRef.current.loadInitialModel(generator());
+      setCurrentBaseModel('Eagle');
+    }
+  };
+
+  const handleSelectCustomBuild = (model: SavedModel) => {
+      if (engineRef.current) {
+          engineRef.current.loadInitialModel(model.data);
+          setCurrentBaseModel(model.name);
+      }
+  };
+
+  const handleRebuild = (type: 'Eagle' | 'Cat' | 'Rabbit' | 'Twins') => {
+    const generator = Generators[type];
+    if (generator && engineRef.current) {
+      engineRef.current.rebuild(generator());
+    }
+  };
+
+  const handleSelectCustomRebuild = (model: SavedModel) => {
+      if (engineRef.current) {
+          engineRef.current.rebuild(model.data);
+      }
+  };
+
+  const handleDeleteBuild = (idx: number) => {
+      if (confirm("Delete this saved build?")) {
+        setCustomBuilds(prev => prev.filter((_, i) => i !== idx));
+      }
+  };
+
+  const handleDeleteRebuild = (idx: number) => {
+    if (confirm("Delete this saved rebuild?")) {
+        setCustomRebuilds(prev => prev.filter((_, i) => i !== idx));
+    }
+  };
+
+  const handleSaveCurrent = (name: string) => {
+    if (engineRef.current) {
+        const data = engineRef.current.getVoxelData();
+        setCustomBuilds(prev => [...prev, { name, data }]);
+        setCurrentBaseModel(name);
+    }
+  };
+
+  const handleShowJson = () => {
+    if (engineRef.current) {
+      setJsonData(engineRef.current.getJsonData());
+      setJsonModalMode('view');
+      setIsJsonModalOpen(true);
+    }
+  };
+
+  const handleImportClick = () => {
+      setJsonModalMode('import');
+      setIsJsonModalOpen(true);
+  };
+
+  const handleJsonImport = (jsonStr: string) => {
+      try {
+          const rawData = JSON.parse(jsonStr);
+          if (!Array.isArray(rawData)) throw new Error("JSON must be an array");
+
+          const voxelData: VoxelData[] = rawData.map((v: any) => {
+              let colorVal = v.c || v.color;
+              let colorInt = 0xCCCCCC;
+
+              if (typeof colorVal === 'string') {
+                  if (colorVal.startsWith('#')) colorVal = colorVal.substring(1);
+                  colorInt = parseInt(colorVal, 16);
+              } else if (typeof colorVal === 'number') {
+                  colorInt = colorVal;
+              }
+
+              return {
+                  x: Number(v.x) || 0,
+                  y: Number(v.y) || 0,
+                  z: Number(v.z) || 0,
+                  color: isNaN(colorInt) ? 0xCCCCCC : colorInt
+              };
+          });
+          
+          if (engineRef.current) {
+              engineRef.current.loadInitialModel(voxelData);
+              setCurrentBaseModel('Imported Build');
+          }
+      } catch (e) {
+          console.error("Failed to import JSON", e);
+          alert("Failed to import JSON. Please ensure the format is correct.");
+      }
+  };
+
+  const openPrompt = (mode: 'create' | 'morph') => {
+      setPromptMode(mode);
+      setIsPromptModalOpen(true);
+  }
+  
+  const handleToggleRotation = () => {
+      const newState = !isAutoRotate;
+      setIsAutoRotate(newState);
+      if (engineRef.current) {
+          engineRef.current.setAutoRotate(newState);
+      }
+  }
+
+  const handlePromptSubmit = async (prompt: string) => {
+    if (!process.env.API_KEY) {
+        throw new Error("API Key not found");
+    }
+
+    setIsGenerating(true);
+    setIsPromptModalOpen(false);
+
+    try {
+        const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+        const model = 'gemini-3-pro-preview';
+        
+        let systemContext = "";
+        if (promptMode === 'morph' && engineRef.current) {
+            const availableColors = engineRef.current.getUniqueColors().join(', ');
+            systemContext = `
+                CONTEXT: You are re-assembling an existing pile of lego-like voxels.
+                The current pile consists of these colors: [${availableColors}].
+                TRY TO USE THESE COLORS if they fit the requested shape.
+                If the requested shape absolutely requires different colors, you may use them, but prefer the existing palette to create a "rebuilding" effect.
+                The model should be roughly the same volume as the previous one.
+            `;
+        } else {
+            systemContext = `
+                CONTEXT: You are creating a brand new voxel art scene from scratch.
+                Be creative with colors.
+            `;
+        }
+
+        const response = await ai.models.generateContent({
+            model,
+            contents: `
+                    ${systemContext}
+                    
+                    Task: Generate a 3D voxel art model of: "${prompt}".
+                    
+                    Strict Rules:
+                    1. Use approximately 150 to 600 voxels.
+                    2. The model must be centered at x=0, z=0.
+                    3. The bottom of the model must be at y=0 or slightly higher.
+                    4. Ensure the structure is physically plausible (connected).
+                    5. Coordinates should be integers.
+                    
+                    Return ONLY a JSON array of objects.`,
+            config: {
+                responseMimeType: "application/json",
+                responseSchema: {
+                    type: Type.ARRAY,
+                    items: {
+                        type: Type.OBJECT,
+                        properties: {
+                            x: { type: Type.INTEGER },
+                            y: { type: Type.INTEGER },
+                            z: { type: Type.INTEGER },
+                            color: { type: Type.STRING, description: "Hex color code e.g. #FF5500" }
+                        },
+                        required: ["x", "y", "z", "color"]
+                    }
+                }
+            }
+        });
+
+        if (response.text) {
+            const rawData = JSON.parse(response.text);
+            const voxelData: VoxelData[] = rawData.map((v: any) => {
+                let colorStr = v.color;
+                if (colorStr.startsWith('#')) colorStr = colorStr.substring(1);
+                const colorInt = parseInt(colorStr, 16);
+                
+                return {
+                    x: v.x,
+                    y: v.y,
+                    z: v.z,
+                    color: isNaN(colorInt) ? 0xCCCCCC : colorInt
+                };
+            });
+
+            if (engineRef.current) {
+                if (promptMode === 'create') {
+                    engineRef.current.loadInitialModel(voxelData);
+                    setCustomBuilds(prev => [...prev, { name: prompt, data: voxelData }]);
+                    setCurrentBaseModel(prompt);
+                } else {
+                    engineRef.current.rebuild(voxelData);
+                    setCustomRebuilds(prev => [...prev, { 
+                        name: prompt, 
+                        data: voxelData,
+                        baseModel: currentBaseModel 
+                    }]);
+                }
+            }
+        }
+    } catch (err) {
+        console.error("Generation failed", err);
+        alert("Oops! Something went wrong generating the model.");
+    } finally {
+        setIsGenerating(false);
+    }
+  };
+
+  const relevantRebuilds = customRebuilds.filter(
+      r => r.baseModel === currentBaseModel
+  );
+
+  return (
+    <div 
+        className={`relative w-full h-screen bg-[#f0f2f5] overflow-hidden ${isEditMode ? 'cursor-none' : ''}`}
+        onPointerMove={handlePointerMove}
+        onClick={handleClick}
+    >
+      <div ref={containerRef} className="absolute inset-0 z-0" />
+      
+      <UIOverlay 
+        voxelCount={voxelCount}
+        appState={appState}
+        currentBaseModel={currentBaseModel}
+        customBuilds={customBuilds}
+        customRebuilds={relevantRebuilds} 
+        isAutoRotate={isAutoRotate}
+        isInfoVisible={showWelcome}
+        isGenerating={isGenerating}
+        isEditMode={isEditMode}
+        buildTool={buildTool}
+        isGridVisible={isGridVisible}
+        selectedColor={selectedColor}
+        onDismantle={handleDismantle}
+        onRebuild={handleRebuild}
+        onNewScene={handleNewScene}
+        onSelectCustomBuild={handleSelectCustomBuild}
+        onSelectCustomRebuild={handleSelectCustomRebuild}
+        onDeleteBuild={handleDeleteBuild}
+        onDeleteRebuild={handleDeleteRebuild}
+        onPromptCreate={() => openPrompt('create')}
+        onPromptMorph={() => openPrompt('morph')}
+        onSaveCurrent={() => setIsSaveModalOpen(true)}
+        onShowJson={handleShowJson}
+        onImportJson={handleImportClick}
+        onToggleRotation={handleToggleRotation}
+        onToggleGrid={() => setIsGridVisible(!isGridVisible)}
+        onToggleInfo={() => setShowWelcome(!showWelcome)}
+        onToggleEdit={() => setIsEditMode(!isEditMode)}
+        onSetBuildTool={setBuildTool}
+        onSelectColor={setSelectedColor}
+      />
+
+      <WelcomeScreen visible={showWelcome} />
+
+      <JsonModal 
+        isOpen={isJsonModalOpen}
+        onClose={() => setIsJsonModalOpen(false)}
+        data={jsonData}
+        isImport={jsonModalMode === 'import'}
+        onImport={handleJsonImport}
+      />
+
+      <PromptModal
+        isOpen={isPromptModalOpen}
+        mode={promptMode}
+        onClose={() => setIsPromptModalOpen(false)}
+        onSubmit={handlePromptSubmit}
+      />
+
+      <SaveModal
+        isOpen={isSaveModalOpen}
+        onClose={() => setIsSaveModalOpen(false)}
+        onSave={handleSaveCurrent}
+      />
+    </div>
+  );
+};
+
+export default App;
