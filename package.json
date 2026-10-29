@@ -9,11 +9,16 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@google/genai": "^1.29.1",
+    "@jsprismarine/leveldb": "^0.15.2",
+    "bedrock-provider": "^3.1.0",
+    "jszip": "^3.10.2",
+    "lucide-react": "^0.553.0",
+    "memfs": "^4.80.0",
+    "prismarine-nbt": "^2.8.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "lucide-react": "^0.553.0",
-    "three": "^0.181.1",
-    "@google/genai": "^1.29.1"
+    "three": "^0.181.1"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
